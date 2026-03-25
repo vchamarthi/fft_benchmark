@@ -16,6 +16,15 @@ import sys
 # Mark which FFT submodules are available...
 fft_modules = {'numpy.fft': np.fft, 'scipy.fft': scipy.fft}
 
+# Optional: register pyFFTW numpy-compatible interface if installed
+try:
+    import pyfftw
+    import pyfftw.interfaces.numpy_fft
+    pyfftw.interfaces.cache.enable()
+    fft_modules['pyfftw'] = pyfftw.interfaces.numpy_fft
+except ImportError:
+    pyfftw = None
+
 def valid_shape(shape_str):
     shape = re.sub(r'[^\d]+', 'x', shape_str).strip('x').split('x')
     shape = tuple(int(i) for i in shape)
@@ -158,6 +167,11 @@ for mod_name in args.modules:
             continue
     if 'workers' in sig.parameters:
         actual_threads = kwargs['workers'] = args.threads
+
+    # pyFFTW: set thread count via its own API (no 'workers' param)
+    if pyfftw is not None and 'pyfftw' in mod_name:
+        kwargs['threads'] = args.threads
+        actual_threads = args.threads
 
     # threads warm-up
     buf = np.empty_like(arr)
