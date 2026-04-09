@@ -16,12 +16,14 @@ import sys
 # Mark which FFT submodules are available...
 fft_modules = {'numpy.fft': np.fft, 'scipy.fft': scipy.fft}
 
-# Optional: register pyFFTW numpy-compatible interface if installed
+# Optional: register pyFFTW interfaces if installed
 try:
     import pyfftw
     import pyfftw.interfaces.numpy_fft
+    import pyfftw.interfaces.scipy_fft as _pyfftw_scipy
     pyfftw.interfaces.cache.enable()
     fft_modules['pyfftw'] = pyfftw.interfaces.numpy_fft
+    fft_modules['pyfftw.scipy'] = _pyfftw_scipy
 except ImportError:
     pyfftw = None
 
@@ -104,6 +106,11 @@ parser.add_argument('shape', type=valid_shape,
 
 args = parser.parse_args()
 
+# Configure pyFFTW thread count from CLI args
+# PLANNER_EFFORT is read from PYFFTW_PLANNER_EFFORT env var (set in pyfftw.yaml)
+if pyfftw is not None:
+    pyfftw.config.NUM_THREADS = args.threads
+
 # Get timer
 timer = perf.get_timer()
 if args.verbose:
@@ -114,6 +121,25 @@ threads, threading_info_source = perf.set_threads(num_threads=args.threads,
                                                   verbose=args.verbose)
 if args.verbose:
     print(f'TAG: threading_info_source = {threading_info_source}')
+
+# pyFFTW threading sanity check
+if pyfftw is not None and args.threads > 1:
+    import time as _time
+    _test = np.random.randn(1024, 1024).astype(np.complex128)
+    _t0 = _time.perf_counter()
+    pyfftw.interfaces.numpy_fft.fft2(_test, threads=1)
+    _t1 = _time.perf_counter()
+    pyfftw.interfaces.numpy_fft.fft2(_test, threads=args.threads)
+    _t2 = _time.perf_counter()
+    _ratio = (_t1 - _t0) / max(_t2 - _t1, 1e-9)
+    if _ratio < 1.1:
+        print(f'TAG: WARNING: FFTW threading may not be working '
+              f'(T=1: {(_t1 - _t0) * 1000:.1f}ms, '
+              f'T={args.threads}: {(_t2 - _t1) * 1000:.1f}ms, '
+              f'ratio: {_ratio:.2f}x)')
+    elif args.verbose:
+        print(f'TAG: FFTW threading OK (ratio: {_ratio:.2f}x)')
+    del _test
 
 # Get function from shape
 assert len(args.shape) >= 1
@@ -168,8 +194,9 @@ for mod_name in args.modules:
     if 'workers' in sig.parameters:
         actual_threads = kwargs['workers'] = args.threads
 
-    # pyFFTW: set thread count via its own API (no 'workers' param)
-    if pyfftw is not None and 'pyfftw' in mod_name:
+    # pyFFTW numpy interface: set thread count via its own API (no 'workers' param)
+    # pyfftw.scipy uses 'workers' (handled above), pyfftw numpy uses 'threads'
+    if pyfftw is not None and mod_name == 'pyfftw':
         kwargs['threads'] = args.threads
         actual_threads = args.threads
 
